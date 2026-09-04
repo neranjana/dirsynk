@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dirsynk"
+version = "1.0.0"
+description = "Cross-platform directory synchroniser with a plan-then-confirm workflow"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+dirsynk = "dirsynk.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+include = ["dirsynk*"]
+
+[tool.setuptools.package-data]
+"dirsynk.ui" = ["resources/*.png"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Markdown is prose here (the brief, the README, the plan), not source to reformat.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
