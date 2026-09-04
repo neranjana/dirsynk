@@ -18,7 +18,14 @@ from typing import Any
 
 from ..core import jobs
 from ..core.executor import RunEvent, execute
-from ..core.models import JobConfig, Plan, RunResult, human_bytes, human_duration
+from ..core.models import (
+    JobConfig,
+    Plan,
+    RunResult,
+    human_bytes,
+    human_duration,
+    pause_summary,
+)
 from ..core.planner import build_snapshot, preview
 from ..core.scanner import scan
 
@@ -256,9 +263,11 @@ class ExecuteDialog(tk.Toplevel):
             self.on_done(self.result, self.error)
 
     def _handle_event(self, event: RunEvent) -> None:
-        if event.kind == "item":
+        if event.kind in ("item", "paused"):
+            # A pause says so on the label: several silent seconds between files would
+            # otherwise be indistinguishable from a stall.
             self.item_label.configure(text=event.message)
-        if event.kind in ("item", "progress", "started", "done"):
+        if event.kind in ("item", "paused", "progress", "started", "done"):
             if event.total_bytes:
                 self.byte_bar.configure(value=100 * event.done_bytes / event.total_bytes)
             self.byte_label.configure(
@@ -348,6 +357,9 @@ class SummaryDialog(tk.Toplevel):
             "",
             self.result.summary_line(),
         ]
+        pause = pause_summary(self.job.copy_pause_s, self.result.copied)
+        if pause:
+            lines.insert(4, f"Paused {pause}")
         if self.result.errors:
             lines.append("")
             lines.append("Failures:")

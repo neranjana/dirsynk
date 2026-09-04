@@ -232,3 +232,41 @@ def test_two_way_second_run_propagates_a_delete(tmp_path: Path) -> None:
     assert list((a / ".deleted").rglob("shared.txt"))
     saved = json.loads((jobs.jobs_dir() / "both-ways.json").read_text())
     assert set(saved["snapshot"]) == {"keep.txt"}
+
+
+def test_the_plan_says_how_long_the_pausing_will_add(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    fixture_job(tmp_path, copy_pause_s=5)
+    assert main(["--job", "Fixture", "--dry-run"]) == 0
+    # Two copies in the fixture: one gap of five seconds between them.
+    assert "Pausing 5s between file copies (adds about 5.0s)" in capsys.readouterr().out
+
+
+def test_a_job_without_a_pause_says_nothing_about_pausing(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    fixture_job(tmp_path)
+    assert main(["--job", "Fixture", "--dry-run"]) == 0
+    assert "Pausing" not in capsys.readouterr().out
+
+
+def test_pause_overrides_the_job_for_one_run_and_is_never_written_back(
+    tmp_path: Path, isolated_home: Path, capsys: pytest.CaptureFixture
+) -> None:
+    fixture_job(tmp_path, copy_pause_s=5)
+    assert main(["--job", "Fixture", "--pause", "0", "--yes"]) == 0
+
+    assert "Pausing" not in capsys.readouterr().out
+    saved = json.loads((isolated_home / "fixture.json").read_text(encoding="utf-8"))
+    assert saved["copy_pause_s"] == 5
+
+
+def test_an_impossible_pause_is_refused_before_anything_is_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    fixture_job(tmp_path)
+    for bad in ("-1", "nonsense", "99999"):
+        with pytest.raises(SystemExit) as exit_info:
+            main(["--job", "Fixture", "--pause", bad, "--dry-run"])
+        assert exit_info.value.code == 2

@@ -16,6 +16,7 @@ from typing import Any
 
 from .models import (
     COMPARE_MODES,
+    COPY_PAUSE_LIMIT_S,
     DEFAULT_EXCLUDES,
     DELETION_POLICIES,
     SCHEMA_VERSION,
@@ -103,6 +104,18 @@ def _require(data: dict[str, Any], key: str, path: Path) -> Any:
     return data[key]
 
 
+def _copy_pause(raw: Any, path: Path) -> float:
+    """The pause between copies, or a JobError naming what is wrong with it."""
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        raise JobError(f"{path.name}: 'copy_pause_s' must be a number of seconds.")
+    if not 0 <= raw <= COPY_PAUSE_LIMIT_S:
+        raise JobError(
+            f"{path.name}: 'copy_pause_s' is {raw!r}, which is outside "
+            f"0–{COPY_PAUSE_LIMIT_S:g} seconds."
+        )
+    return float(raw)
+
+
 def load(path: Path) -> JobConfig:
     """Read one job file, rejecting anything it cannot honour exactly."""
     try:
@@ -147,6 +160,7 @@ def load(path: Path) -> JobConfig:
     exclude = data.get("exclude", list(DEFAULT_EXCLUDES))
     if not isinstance(exclude, list) or any(not isinstance(item, str) for item in exclude):
         raise JobError(f"{path.name}: 'exclude' must be a list of strings.")
+    pause = _copy_pause(data.get("copy_pause_s", 0), path)
 
     return JobConfig(
         name=str(_require(data, "name", path)),
@@ -158,6 +172,7 @@ def load(path: Path) -> JobConfig:
         # Kept even while unused, so switching criterion away and back loses nothing.
         mtime_tolerance_s=float(data.get("mtime_tolerance_s", 2)),
         follow_symlinks=bool(data.get("follow_symlinks", False)),
+        copy_pause_s=pause,
         exclude=list(exclude),
         created_utc=str(data.get("created_utc") or utc_now()),
         last_run_utc=data.get("last_run_utc"),
@@ -216,6 +231,7 @@ def duplicate(job: JobConfig, new_name: str) -> JobConfig:
         compare=job.compare,
         mtime_tolerance_s=job.mtime_tolerance_s,
         follow_symlinks=job.follow_symlinks,
+        copy_pause_s=job.copy_pause_s,
         exclude=list(job.exclude),
         created_utc=utc_now(),
     )

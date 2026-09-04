@@ -33,6 +33,10 @@ TEMP_SUFFIX = ".dirsynk.tmp"
 
 DEFAULT_EXCLUDES: tuple[str, ...] = ("*.tmp", ".DS_Store", "Thumbs.db", "__pycache__/")
 
+#: Upper bound on the pause between file copies. An hour between two files is already
+#: far past anything useful; beyond it a job file is more likely wrong than deliberate.
+COPY_PAUSE_LIMIT_S = 3600.0
+
 SCHEMA_VERSION = 1
 
 #: Order actions are executed (and grouped) in: parents before children for mkdir,
@@ -81,6 +85,20 @@ def human_duration(seconds: float) -> str:
     if seconds < 86400:
         return f"{seconds / 3600:.1f}h"
     return f"{seconds / 86400:.1f}d"
+
+
+def pause_summary(seconds: float, n_copies: int) -> str | None:
+    """How a pause between copies reads to the user, or None when there is no pause.
+
+    The estimate counts the gaps rather than the copies — a pause goes *between* two
+    files, so ten copies wait nine times — and it is the pausing alone: the copying
+    itself takes however long it takes on top.
+    """
+    if seconds <= 0:
+        return None
+    gaps = max(0, n_copies - 1)
+    text = f"{seconds:g}s between file copies"
+    return text if not gaps else f"{text} (adds about {human_duration(seconds * gaps)})"
 
 
 # --- entries ----------------------------------------------------------------------
@@ -275,6 +293,8 @@ class JobConfig:
     compare: CompareMode = "size_mtime"
     mtime_tolerance_s: float = 2
     follow_symlinks: bool = False
+    #: Seconds to wait between one file copy and the next; 0 copies without pausing.
+    copy_pause_s: float = 0.0
     exclude: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDES))
     created_utc: str = ""
     last_run_utc: str | None = None
@@ -293,7 +313,12 @@ class JobConfig:
         return Path(self.path_b).expanduser()
 
     def fingerprint(self) -> str:
-        """Identity of every setting that can change a plan's meaning."""
+        """Identity of every setting that can change a plan's meaning.
+
+        ``copy_pause_s`` is deliberately absent: it paces a run without altering a
+        single row of the plan, so changing it must not invalidate a plan you are
+        already looking at.
+        """
         return "|".join(
             [
                 self.path_a,
@@ -318,6 +343,7 @@ class JobConfig:
             "compare": self.compare,
             "mtime_tolerance_s": self.mtime_tolerance_s,
             "follow_symlinks": self.follow_symlinks,
+            "copy_pause_s": self.copy_pause_s,
             "exclude": list(self.exclude),
             "created_utc": self.created_utc,
             "last_run_utc": self.last_run_utc,

@@ -82,6 +82,28 @@ read "sizes differ (4 KB vs 8 KB), A newer by 52m".
 The plan always says which criterion produced it ("Compared by: size only"), and changing
 the criterion invalidates the plan: you have to preview again before you can run.
 
+## Pausing between copies
+
+A job can wait a fixed number of seconds between one file copy and the next —
+**Pause between file copies** in the job editor, `copy_pause_s` in the job file, `0` for
+no pause at all. Set it to 5 and dirsynk copies a file, waits five seconds, copies the
+next, and so on. It is there for the destinations that punish being hammered: a rate-limited
+cloud mount, a NAS you would rather not saturate, a drive you want to keep responsive for
+something else while a long sync runs in the background.
+
+Three things it deliberately does not do:
+
+- **The pause goes *between* copies, not around them.** Ten files wait nine times: nothing
+  before the first copy, nothing after the last.
+- **It slows copies only.** Creating folders and deleting are not spaced out — those are
+  cheap, and pausing between them would only make a run longer for no benefit.
+- **It never blocks Cancel.** The wait is on the cancel signal itself, so a run pausing a
+  minute between files still stops the moment you ask it to, rather than a minute later.
+
+The plan says what the pausing will cost before you commit to it — "Pausing 5s between
+file copies (adds about 12m)" — counting the gaps, not the files, and counting only the
+waiting: the copying takes however long it takes on top of that.
+
 ## Where things live
 
 **Jobs** are JSON files in `~/.dirsynk/`, one per job, written atomically. They are
@@ -98,6 +120,7 @@ readable and editable by hand:
   "compare": "size_mtime",
   "mtime_tolerance_s": 2,
   "follow_symlinks": false,
+  "copy_pause_s": 0,
   "exclude": ["*.tmp", ".DS_Store", "Thumbs.db", "__pycache__/"],
   "created_utc": "2026-09-04T00:00:00Z",
   "last_run_utc": null,
@@ -134,6 +157,7 @@ The same engine, for scripting and for cron:
 dirsynk --list
 dirsynk --job "Photos to NAS" --dry-run
 dirsynk --job "Photos to NAS" --compare size_only --dry-run
+dirsynk --job "Photos to NAS" --pause 5 --yes
 dirsynk --job "Photos to NAS" --yes
 ```
 
@@ -141,6 +165,8 @@ dirsynk --job "Photos to NAS" --yes
 - `--yes` skips the confirmation prompt (use it in scheduled runs).
 - `--compare` overrides the job's saved criterion **for that run only**; it is never
   written back to the job file.
+- `--pause` does the same for the pause between file copies — `--pause 0` runs a paced
+  job at full speed once, without editing the job.
 
 Exit codes: `0` fine, `1` the job could not be run at all, `3` the run finished but some
 items failed, `130` cancelled or declined.

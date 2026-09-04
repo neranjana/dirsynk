@@ -22,7 +22,7 @@ from .models import TEMP_SUFFIX, Action, ItemError, JobConfig, Plan, RunResult
 
 COPY_CHUNK = 1 << 20
 
-EventKind = Literal["started", "item", "progress", "log", "done"]
+EventKind = Literal["started", "item", "progress", "log", "paused", "done"]
 
 
 @dataclass(frozen=True)
@@ -109,6 +109,18 @@ class _Cancelled(Exception):
     pass
 
 
+def _wait(seconds: float, cancel: threading.Event | None) -> bool:
+    """Hold for ``seconds``. Returns False if Cancel was pressed during the wait.
+
+    Waiting on the event rather than sleeping is what keeps Cancel responsive: a run
+    pausing a minute between files would otherwise ignore the button for a minute.
+    """
+    if cancel is None:
+        time.sleep(seconds)
+        return True
+    return not cancel.wait(seconds)
+
+
 def _discard(tmp: Path) -> None:
     try:
         if tmp.is_symlink() or tmp.exists():
@@ -128,10 +140,17 @@ def execute(
     cancel: threading.Event | None = None,
     on_event: EventSink | None = None,
     stamp: str | None = None,
+    pause_s: float | None = None,
 ) -> RunResult:
-    """Perform every ticked action in the plan and report what happened."""
+    """Perform every ticked action in the plan and report what happened.
+
+    ``pause_s`` overrides the job's own pause between file copies for this run only —
+    the CLI's ``--pause`` — and is never written back to the job.
+    """
     emit = on_event or (lambda event: None)
     actions = ordered_actions(plan.actions)
+    pause = max(0.0, config.copy_pause_s if pause_s is None else pause_s)
+    copies_done = 0  # a pause goes *between* copies, so the first one never waits
     result = RunResult()
     started = time.monotonic()
     stamp = stamp or deleter.run_stamp()
@@ -188,8 +207,25 @@ def execute(
                     result.created += 1
                     emit(RunEvent("log", message=f"mkdir: {action.rel}", rel=str(action.rel)))
                     continue
+                if pause and copies_done:
+                    emit(
+                        RunEvent(
+                            "paused",
+                            message=f"Pausing {pause:g}s before the next copy…",
+                            rel=str(action.rel),
+                            done_items=index - 1,
+                            total_items=total_items,
+                            done_bytes=done_bytes,
+                            total_bytes=total_bytes,
+                        )
+                    )
+                    if not _wait(pause, cancel):
+                        result.cancelled = True
+                        emit(RunEvent("log", message="Cancelled."))
+                        break
                 before = done_bytes
                 if _copy_file(action.src, action.dst, cancel=cancel, on_bytes=report_bytes):
+                    copies_done += 1
                     result.copied += 1
                     result.bytes_copied += action.size
                 else:

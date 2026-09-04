@@ -14,7 +14,14 @@ from collections.abc import Sequence
 from .core import jobs
 from .core.executor import RunEvent, execute
 from .core.jobs import JobError
-from .core.models import COMPARE_MODES, JobConfig, Plan, human_bytes
+from .core.models import (
+    COMPARE_MODES,
+    COPY_PAUSE_LIMIT_S,
+    JobConfig,
+    Plan,
+    human_bytes,
+    pause_summary,
+)
 from .core.planner import build_snapshot, preview
 from .core.scanner import scan
 from .core.validate import validate
@@ -41,10 +48,27 @@ def build_parser() -> argparse.ArgumentParser:
         choices=COMPARE_MODES,
         help="override the job's comparison criterion for this run only",
     )
+    parser.add_argument(
+        "--pause",
+        type=_pause_argument,
+        metavar="SECONDS",
+        help="override the job's pause between file copies for this run only",
+    )
     return parser
 
 
-def render_plan(plan: Plan, job: JobConfig) -> str:
+def _pause_argument(raw: str) -> float:
+    """``--pause`` as a number of seconds, refused rather than clamped if impossible."""
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number of seconds") from None
+    if not 0 <= seconds <= COPY_PAUSE_LIMIT_S:
+        raise argparse.ArgumentTypeError(f"must be between 0 and {COPY_PAUSE_LIMIT_S:g} seconds")
+    return seconds
+
+
+def render_plan(plan: Plan, job: JobConfig, *, pause: float | None = None) -> str:
     """The plan as text, in the same terms the GUI shows it."""
     lines = [
         f"Job: {job.name}",
@@ -55,6 +79,9 @@ def render_plan(plan: Plan, job: JobConfig) -> str:
         f"B: {job.root_b}",
         f"Scanned: {plan.scanned_a} items in A, {plan.scanned_b} in B",
     ]
+    paused = pause_summary(job.copy_pause_s if pause is None else pause, plan.n_copies)
+    if paused:
+        lines.append(f"Pausing {paused}")
     if plan.first_run:
         lines.append("First two-way run: no snapshot yet, so nothing will be deleted.")
     lines.append("")
@@ -147,7 +174,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_ERROR
 
     plan, _, _ = preview(job, compare=options.compare)
-    print(render_plan(plan, job))
+    print(render_plan(plan, job, pause=options.pause))
 
     if options.dry_run:
         print("\nDry run: nothing was written.")
@@ -169,10 +196,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     cancel = threading.Event()
 
     def report(event: RunEvent) -> None:
-        if event.kind == "log":
+        # "paused" too, so a long wait between files does not read as a hang.
+        if event.kind in ("log", "paused"):
             print(f"  {event.message}")
 
-    result = execute(plan, job, cancel=cancel, on_event=report)
+    # The override is passed to the run, never assigned to the job: _update_job_after_run
+    # saves the job afterwards, and --pause must not survive into the file.
+    result = execute(plan, job, cancel=cancel, on_event=report, pause_s=options.pause)
     print()
     print(result.summary_line())
     for error in result.errors:

@@ -1,4 +1,4 @@
-"""The job editor: two folders, a mode, a criterion, a deletion policy, exclusions."""
+"""The job editor: two folders, a mode, a criterion, a deletion policy, a pace, exclusions."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from ..core import jobs
 from ..core.jobs import JobError
-from ..core.models import JobConfig
+from ..core.models import COPY_PAUSE_LIMIT_S, JobConfig
 from ..core.validate import path_problem, validate
 from .plan_view import PlanWindow
 from .runner import PreviewDialog
@@ -148,6 +148,7 @@ class JobEditor(tk.Toplevel):
         self.policy_var = tk.StringVar(value=job.deletion_policy)
         self.tolerance_var = tk.StringVar(value=str(job.mtime_tolerance_s))
         self.symlink_var = tk.BooleanVar(value=job.follow_symlinks)
+        self.pause_var = tk.StringVar(value=f"{job.copy_pause_s:g}")
 
         self._build()
         self._sync_tolerance_state()
@@ -221,6 +222,24 @@ class JobEditor(tk.Toplevel):
             text="Follow symbolic links (off: links are synced as links)",
             variable=self.symlink_var,
         ).pack(anchor="w")
+
+        pause_row = ttk.Frame(options)
+        pause_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(pause_row, text="Pause between file copies (seconds)").pack(side="left")
+        self.pause_spin = ttk.Spinbox(
+            pause_row,
+            from_=0,
+            to=COPY_PAUSE_LIMIT_S,
+            increment=1,
+            width=8,
+            textvariable=self.pause_var,
+        )
+        self.pause_spin.pack(side="left", padx=(10, 0))
+        ttk.Label(
+            pause_row,
+            text="0 = no pause; a wait between one file and the next",
+            foreground=GREY,
+        ).pack(side="left", padx=(10, 0))
 
         excludes = ttk.LabelFrame(outer, text="Exclusions", padding=10)
         excludes.pack(fill="both", expand=True, pady=(12, 0))
@@ -325,7 +344,17 @@ class JobEditor(tk.Toplevel):
             self.job.mtime_tolerance_s = 2
             self.tolerance_var.set("2")
         self.job.follow_symlinks = bool(self.symlink_var.get())
+        self.job.copy_pause_s = self._pause_seconds()
+        self.pause_var.set(f"{self.job.copy_pause_s:g}")
         self.job.exclude = list(self.exclude_list.get(0, "end"))
+
+    def _pause_seconds(self) -> float:
+        """What is in the pause box, held to 0–COPY_PAUSE_LIMIT_S; nonsense reads as 0."""
+        try:
+            typed = float(self.pause_var.get())
+        except ValueError:
+            return 0.0
+        return min(max(typed, 0.0), COPY_PAUSE_LIMIT_S)
 
     def save(self) -> bool:
         self.apply_to_job()
@@ -380,10 +409,15 @@ class JobEditor(tk.Toplevel):
             return
         PlanWindow(self, self.job, plan, on_repreview=self.preview)
 
+    def _unsaved_state(self) -> tuple[str, str, float]:
+        """Everything Save would write. The fingerprint deliberately leaves the pause
+        out — it cannot change a plan — so it is compared alongside, not inside."""
+        return self.job.fingerprint(), self.job.name, self.job.copy_pause_s
+
     def _close(self) -> None:
-        before = self.job.fingerprint(), self.job.name
+        before = self._unsaved_state()
         self.apply_to_job()
-        if (self.job.fingerprint(), self.job.name) != before or self.job.file_path is None:
+        if self._unsaved_state() != before or self.job.file_path is None:
             answer = messagebox.askyesnocancel(
                 "Unsaved changes", "Save this job before closing?", parent=self
             )

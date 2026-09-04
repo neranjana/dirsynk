@@ -192,3 +192,37 @@ def test_a_real_job_round_trips_its_snapshot(isolated_home: Path, tmp_path: Path
     job.snapshot = {"f.txt": {"kind": "file", "size": 1, "mtime_ns": mtime_ns}}
     path = jobs.save(job)
     assert jobs.load(path).snapshot["f.txt"]["kind"] == "file"
+
+
+def test_the_pause_between_copies_round_trips(isolated_home: Path) -> None:
+    path = jobs.save(a_job(copy_pause_s=2.5))
+    assert json.loads(path.read_text(encoding="utf-8"))["copy_pause_s"] == 2.5
+    assert jobs.load(path).copy_pause_s == 2.5
+
+
+def test_a_job_file_written_before_pauses_existed_loads_without_one(
+    isolated_home: Path,
+) -> None:
+    path = jobs.save(a_job())
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["copy_pause_s"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert jobs.load(path).copy_pause_s == 0.0
+
+
+@pytest.mark.parametrize("value", [-1, 4000, "5", None, True])
+def test_an_impossible_pause_is_named_rather_than_guessed_at(
+    isolated_home: Path, value
+) -> None:
+    path = jobs.save(a_job())
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["copy_pause_s"] = value
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(JobError, match="copy_pause_s"):
+        jobs.load(path)
+
+
+def test_duplicating_a_job_keeps_its_pause(isolated_home: Path) -> None:
+    assert jobs.duplicate(a_job(copy_pause_s=7), "Copy").copy_pause_s == 7

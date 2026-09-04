@@ -10,7 +10,15 @@ import tkinter as tk
 from collections.abc import Callable
 from tkinter import messagebox, ttk
 
-from ..core.models import ACTION_ORDER, Action, JobConfig, Plan, RunResult, human_bytes
+from ..core.models import (
+    ACTION_ORDER,
+    Action,
+    JobConfig,
+    Plan,
+    RunResult,
+    human_bytes,
+    pause_summary,
+)
 from .runner import ExecuteDialog, SummaryDialog, confirm
 
 TICKED = "☑"
@@ -83,6 +91,13 @@ class PlanWindow(tk.Toplevel):
         ttk.Label(header, text=f"A: {self.job.root_a}    B: {self.job.root_b}").grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(2, 0)
         )
+
+        # The pause is worth seeing before you commit to a run, not after: it is the
+        # difference between a two-minute job and an afternoon.
+        pause = pause_summary(self.job.copy_pause_s, self.plan.n_copies)
+        if pause:
+            self.pause_label = ttk.Label(header, text=f"Pausing {pause}", foreground="#8a6d00")
+            self.pause_label.grid(row=1, column=1, sticky="e", padx=(12, 0))
 
         if self.plan.first_run:
             ttk.Label(

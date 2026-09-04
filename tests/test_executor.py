@@ -223,3 +223,104 @@ def test_a_kind_conflict_replaces_the_destination_under_the_policy(tmp_path: Pat
     assert (b / "thing").read_text() == "now a file"
     assert list((b / ".deleted").rglob("inside.txt"))
     assert result.failed == 0
+
+
+# --- pausing between copies --------------------------------------------------------
+
+
+def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record what the executor would have waited for, without waiting."""
+    waits: list[float] = []
+    monkeypatch.setattr(executor.time, "sleep", waits.append)
+    return waits
+
+
+def test_a_pause_falls_between_copies_and_not_before_the_first_or_after_the_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waits = slept(monkeypatch)
+    a = build(tmp_path / "a", {"1.txt": "one", "2.txt": "two", "3.txt": "three"})
+    _, result = run(a, tmp_path / "b", copy_pause_s=5)
+
+    assert result.copied == 3
+    assert waits == [5, 5]  # three copies, two gaps
+
+
+def test_one_copy_never_waits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    waits = slept(monkeypatch)
+    a = build(tmp_path / "a", {"only.txt": "x"})
+    _, result = run(a, tmp_path / "b", copy_pause_s=5)
+
+    assert result.copied == 1
+    assert waits == []
+
+
+def test_the_default_job_does_not_pause_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waits = slept(monkeypatch)
+    a = build(tmp_path / "a", {"1.txt": "one", "2.txt": "two"})
+    _, result = run(a, tmp_path / "b")
+
+    assert result.copied == 2
+    assert waits == []
+
+
+def test_folders_and_deletions_are_not_spaced_out_by_the_pause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pause is between file copies; nothing else in the plan is slowed down."""
+    waits = slept(monkeypatch)
+    a = build(tmp_path / "a", {"sub/deep/1.txt": "one", "empty": None})
+    b = build(tmp_path / "b", {"stale.txt": "x", "gone/also.txt": "y"})
+    _, result = run(a, b, copy_pause_s=5)
+
+    assert (result.copied, result.created) == (1, 3)
+    assert result.deleted >= 2
+    assert waits == []
+
+
+def test_pause_s_overrides_the_job_for_one_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waits = slept(monkeypatch)
+    a = build(tmp_path / "a", {"1.txt": "one", "2.txt": "two"})
+    job = config(a, tmp_path / "b", copy_pause_s=5)
+    plan, _, _ = preview(job)
+
+    execute(plan, job, pause_s=0.25)
+
+    assert waits == [0.25]
+    assert job.copy_pause_s == 5  # the job itself is untouched
+
+
+class _CancelDuringPause(threading.Event):
+    """Cancel pressed while the run is waiting, rather than before or after."""
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.set()
+        return True
+
+
+def test_cancelling_during_a_pause_stops_the_run_there(tmp_path: Path) -> None:
+    a = build(tmp_path / "a", {"1.txt": "one", "2.txt": "two", "3.txt": "three"})
+    b = tmp_path / "b"
+    _, result = run(a, b, cancel=_CancelDuringPause(), copy_pause_s=60)
+
+    assert result.cancelled
+    assert result.copied == 1  # the first copy landed, the wait after it did not finish
+    assert sorted(p.name for p in b.iterdir()) == ["1.txt"]
+
+
+def test_a_pause_announces_itself_so_a_wait_is_not_mistaken_for_a_hang(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slept(monkeypatch)
+    events: list[RunEvent] = []
+    a = build(tmp_path / "a", {"1.txt": "one", "2.txt": "two"})
+    run(a, tmp_path / "b", on_event=events.append, copy_pause_s=2.5)
+
+    paused = [event for event in events if event.kind == "paused"]
+    assert len(paused) == 1
+    assert paused[0].message == "Pausing 2.5s before the next copy…"
+    assert paused[0].rel == "2.txt"

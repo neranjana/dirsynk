@@ -10,6 +10,7 @@ import pytest
 from helpers import build
 
 from dirsynk.core import jobs
+from dirsynk.core.models import COPY_PAUSE_LIMIT_S
 
 tk = pytest.importorskip("tkinter")
 
@@ -122,3 +123,32 @@ def test_the_window_is_named_and_iconed_dirsynk(root) -> None:
     # One PhotoImage per shipped size, held by the window so Tk's icon survives.
     assert len(root.icon_images) == len(branding.icon_paths()) == len(branding.ICON_SIZES)
     assert root.icon_images[0].width() == max(branding.ICON_SIZES)
+
+
+def test_the_editor_reads_and_writes_the_pause_between_copies(root, tmp_path: Path) -> None:
+    from dirsynk.ui.job_editor import JobEditor
+
+    job = jobs.new_job("Smoke", str(tmp_path / "a"), str(tmp_path / "b"))
+    job.copy_pause_s = 2.5
+    editor = JobEditor(root, job)
+    editor.withdraw()
+    # No update() here: the editor's scrollable area rings between its two Configure
+    # handlers while the window is withdrawn and never settles, so update() would not
+    # return. It settles the moment the window is actually mapped.
+    assert editor.pause_var.get() == "2.5"
+
+    editor.pause_var.set("10")
+    editor.apply_to_job()
+    assert job.copy_pause_s == 10
+
+    # Nonsense reads as no pause, and out-of-range is held to the limit, rather than
+    # either being written to the job file as-is.
+    editor.pause_var.set("later")
+    editor.apply_to_job()
+    assert (job.copy_pause_s, editor.pause_var.get()) == (0.0, "0")
+
+    editor.pause_var.set("99999")
+    editor.apply_to_job()
+    assert job.copy_pause_s == COPY_PAUSE_LIMIT_S
+
+    editor.destroy()
