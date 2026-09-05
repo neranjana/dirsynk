@@ -205,6 +205,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     result = execute(plan, job, cancel=cancel, on_event=report, pause_s=options.pause)
     print()
     print(result.summary_line())
+    if result.log_path:
+        print(f"Log: {result.log_path}")
+    if result.log_error:
+        print(result.log_error, file=sys.stderr)
     for error in result.errors:
         print(f"  {error.rel}: {error.message}", file=sys.stderr)
 

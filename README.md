@@ -134,6 +134,38 @@ is rejected with a message saying so rather than being guessed at. A job whose f
 since disappeared still opens — the paths are shown in red and planning is refused until
 you fix them.
 
+**Run logs** are written to `~/.dirsynk` too, one per run, named after the job file and
+the moment the run started — `photos-to-nas-20260905-142530.log`, carrying the same stamp
+as that run's `.deleted` folder, so a log and the files it quarantined name each other.
+Every folder created, file copied and item deleted gets a line, with both full paths and
+what became of it:
+
+```
+# dirsynk run — Photos to NAS — started 2026-09-05 14:25:30
+# A: /Users/me/Photos
+# B: /Volumes/nas/Photos
+# Mode: mirror · Compare: size_mtime · Deletions: quarantine
+2026-09-05 14:25:30  create dir  /Users/me/Photos/2019  ->  /Volumes/nas/Photos/2019  success
+2026-09-05 14:25:31  copy        /Users/me/Photos/a.jpg  ->  /Volumes/nas/Photos/a.jpg  success
+2026-09-05 14:25:31  copy        /Users/me/Photos/b.jpg  ->  /Volumes/nas/Photos/b.jpg  failed: Permission denied
+2026-09-05 14:25:32  delete      /Volumes/nas/Photos/old.jpg  ->  /Volumes/nas/Photos/.deleted/20260905-142530/old.jpg  success
+# finished 2026-09-05 14:25:32 — 4 operations, 3 succeeded, 1 failed
+```
+
+A delete records where the item went: its place under `.deleted`, or `-` when the job
+deletes permanently and there is nowhere for it to go.
+
+Each line is written in two halves. The operation and its two paths go down *before* the
+work starts and are flushed immediately; the outcome — `success`, or `failed:` and the
+error — is appended to that same line when the work finishes. So a run that is killed
+mid-copy leaves one line with no status on the end, naming exactly the operation that was
+in flight. That is the one thing a log written afterwards could never tell you.
+
+Nothing about the log can cost you a sync: if it cannot be written, the run says why and
+copies your files anyway. Nothing prunes old logs either, for the same reason nothing
+empties `.deleted`: they are the record of what happened to your files, and deciding they
+have stopped mattering is your call, not the program's.
+
 **`.deleted`** is where deleted items go, unless you choose permanent deletion. Each folder
 gets its own, at its root, with the original relative path preserved under a per-run
 timestamp:
@@ -195,7 +227,8 @@ sockets, fifos, devices — are skipped.
 
 ```
 dirsynk/
-  core/        the engine: models, scanner, planner, deleter, executor, jobs, validate
+  core/        the engine: models, scanner, planner, deleter, executor, jobs,
+               runlog, validate
   ui/          tkinter: app, job_editor, plan_view, runner, branding
   ui/resources icon-512.png and its smaller siblings
 ```

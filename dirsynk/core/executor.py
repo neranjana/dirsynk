@@ -14,11 +14,13 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from . import deleter
+from . import deleter, runlog
 from .models import TEMP_SUFFIX, Action, ItemError, JobConfig, Plan, RunResult
+from .runlog import COPY, CREATE_DIR, DELETE, RunLog
 
 COPY_CHUNK = 1 << 20
 
@@ -133,6 +135,28 @@ def _root_written_to(action: Action, config: JobConfig) -> Path:
     return config.root_b if action.direction == "a_to_b" else config.root_a
 
 
+def _delete_destination(action: Action, config: JobConfig, stamp: str) -> Path | None:
+    """Where a delete puts the item: its place in ``.deleted``, or nowhere at all."""
+    if config.deletion_policy != "quarantine":
+        return None
+    return deleter.quarantine_target(
+        _root_written_to(action, config), PurePosixPath(action.rel), stamp
+    )
+
+
+def _log_header(config: JobConfig, plan: Plan, pause: float) -> list[str]:
+    started = datetime.now().strftime(runlog.TIME_FORMAT)
+    header = [
+        f"dirsynk run — {config.name} — started {started}",
+        f"A: {config.root_a}",
+        f"B: {config.root_b}",
+        f"Mode: {config.mode} · Compare: {plan.compare} · Deletions: {config.deletion_policy}",
+    ]
+    if pause:
+        header.append(f"Pausing {pause:g}s between file copies")
+    return header
+
+
 def execute(
     plan: Plan,
     config: JobConfig,
@@ -157,6 +181,10 @@ def execute(
     total_items = len(actions)
     total_bytes = sum(a.size for a in actions if a.is_copy)
     done_bytes = 0
+
+    log = RunLog(runlog.log_path(config, stamp))
+    log.open(_log_header(config, plan, pause))
+    result.log_path = str(log.path)
 
     emit(RunEvent("started", total_items=total_items, total_bytes=total_bytes))
 
@@ -196,15 +224,19 @@ def execute(
                 result.skipped += 1
             elif action.kind == "mkdir":
                 assert action.dst is not None
+                log.begin(CREATE_DIR, action.src, action.dst)
                 action.dst.mkdir(parents=True, exist_ok=True)
                 result.created += 1
+                log.success()
             elif action.is_copy:
                 assert action.src is not None and action.dst is not None
-                _clear_the_way(action, config, stamp)
+                _clear_the_way(action, config, stamp, log)
                 if action.src.is_dir() and not action.src.is_symlink():
                     # A conflict the directory side won: make the directory, don't copy it.
+                    log.begin(CREATE_DIR, action.src, action.dst)
                     action.dst.mkdir(parents=True, exist_ok=True)
                     result.created += 1
+                    log.success()
                     emit(RunEvent("log", message=f"mkdir: {action.rel}", rel=str(action.rel)))
                     continue
                 if pause and copies_done:
@@ -224,11 +256,14 @@ def execute(
                         emit(RunEvent("log", message="Cancelled."))
                         break
                 before = done_bytes
+                log.begin(COPY, action.src, action.dst)
                 if _copy_file(action.src, action.dst, cancel=cancel, on_bytes=report_bytes):
+                    log.success()
                     copies_done += 1
                     result.copied += 1
                     result.bytes_copied += action.size
                 else:
+                    log.cancelled()
                     done_bytes = before
                     result.cancelled = True
                     emit(RunEvent("log", message="Cancelled."))
@@ -246,6 +281,9 @@ def execute(
                         )
                     )
                     continue
+                # The item removed is the source of a delete; where quarantine puts
+                # it is the destination. Permanent deletion has no destination at all.
+                log.begin(DELETE, action.dst, _delete_destination(action, config, stamp))
                 deleter.remove(
                     action.dst,
                     rel=action.rel,
@@ -255,15 +293,22 @@ def execute(
                     is_dir=action.kind == "delete_dir",
                 )
                 result.deleted += 1
+                log.success()
         except OSError as exc:
             # A failure here costs this one item and nothing else.
             result.failed += 1
             message = exc.strerror or str(exc)
+            log.failure(message)
             result.errors.append(ItemError(str(action.rel), action.kind, message))
             emit(RunEvent("log", message=f"FAILED {action.rel}: {message}", rel=str(action.rel)))
         else:
             emit(RunEvent("log", message=f"{action.kind}: {action.rel}", rel=str(action.rel)))
 
+    log.close()
+    if log.error:
+        # The sync itself was fine; only the record of it was not.
+        result.log_error = log.error
+        emit(RunEvent("log", message=log.error))
     result.elapsed_s = time.monotonic() - started
     emit(
         RunEvent(
@@ -278,8 +323,12 @@ def execute(
     return result
 
 
-def _clear_the_way(action: Action, config: JobConfig, stamp: str) -> None:
-    """A file cannot be written over a directory: resolve a kind clash under the policy."""
+def _clear_the_way(action: Action, config: JobConfig, stamp: str, log: RunLog) -> None:
+    """A file cannot be written over a directory: resolve a kind clash under the policy.
+
+    This is a delete like any other and gets its own line, written before the copy's —
+    the copy has not begun a line yet, so the two never interleave.
+    """
     dst = action.dst
     src = action.src
     if dst is None or src is None:
@@ -290,6 +339,7 @@ def _clear_the_way(action: Action, config: JobConfig, stamp: str) -> None:
     src_is_dir = src.is_dir() and not src.is_symlink()
     if dst_is_dir == src_is_dir:
         return
+    log.begin(DELETE, dst, _delete_destination(action, config, stamp))
     deleter.remove_tree(
         dst,
         rel=PurePosixPath(action.rel),
@@ -297,3 +347,4 @@ def _clear_the_way(action: Action, config: JobConfig, stamp: str) -> None:
         policy=config.deletion_policy,
         stamp=stamp,
     )
+    log.success()

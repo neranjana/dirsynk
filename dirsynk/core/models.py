@@ -253,6 +253,9 @@ class RunResult:
     elapsed_s: float = 0.0
     cancelled: bool = False
     errors: list[ItemError] = field(default_factory=list)
+    #: The per-run log file every run writes, and why it stopped being written if it did.
+    log_path: str | None = None
+    log_error: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -264,6 +267,7 @@ class RunResult:
             "bytes_copied": self.bytes_copied,
             "elapsed_s": round(self.elapsed_s, 3),
             "cancelled": self.cancelled,
+            "log": self.log_path,
         }
 
     def summary_line(self) -> str:

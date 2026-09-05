@@ -322,6 +322,11 @@ class SummaryDialog(tk.Toplevel):
             ),
         ).pack(anchor="w", pady=(6, 0))
         ttk.Label(frame, text=f"Elapsed: {human_duration(result.elapsed_s)}").pack(anchor="w")
+        if result.log_path:
+            self.log_label = ttk.Label(frame, text=f"Log: {result.log_path}")
+            self.log_label.pack(anchor="w")
+        if result.log_error:
+            ttk.Label(frame, text=result.log_error, foreground="#b00020").pack(anchor="w")
 
         if result.errors:
             ttk.Label(frame, text=f"{len(result.errors)} item(s) failed:").pack(
@@ -360,6 +365,8 @@ class SummaryDialog(tk.Toplevel):
         pause = pause_summary(self.job.copy_pause_s, self.result.copied)
         if pause:
             lines.insert(4, f"Paused {pause}")
+        if self.result.log_path:
+            lines.append(f"Full operation log: {self.result.log_path}")
         if self.result.errors:
             lines.append("")
             lines.append("Failures:")
